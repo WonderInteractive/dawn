@@ -671,7 +671,7 @@ fn textureStore<S: iu32>(texture: texture_storage_2d<u32_texel_format, write>, c
 fn textureStore<S: iu32>(texture: texture_storage_2d_array<u32_texel_format, write>, coords: vec2<S>, array_index: S, value: vec4<u32>)
 fn textureStore<S: iu32>(texture: texture_storage_3d<u32_texel_format, write>, coords: vec3<S>, value: vec4<u32>)
 fn textureLoad<T: fiu32, S: iu32>(texture: texture_1d<T>, coords: S, level: S) -> vec4<T>
-fn textureLoad<T: fiu32, S: iu32>(texture: texture_2d<T>, coords: vec2<S>, level: S) -> vec4<T>
+fn textureLoad<T: fiu32, S: iu32, V: iu32>(texture: texture_2d<T>, coords: vec2<V>, level: S) -> vec4<T>
 fn textureLoad<T: fiu32, S: iu32>(texture: texture_2d_array<T>, coords: vec2<S>, array_index: S, level: S) -> vec4<T>
 fn textureLoad<T: fiu32, S: iu32>(texture: texture_3d<T>, coords: vec3<S>, level: S) -> vec4<T>
 fn textureLoad<T: fiu32, S: iu32>(texture: texture_multisampled_2d<T>, coords: vec2<S>, sample_index: S) -> vec4<T>
