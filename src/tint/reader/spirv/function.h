@@ -912,9 +912,10 @@ class FunctionEmitter {
     /// texture then the 3rd and 4th components are ignored.
     /// On failure, issues an error and returns an empty expression list.
     /// @param image_access the image access instruction
+    /// @param is_signed the signedness of the coordinates
     /// @returns an ExpressionList of the coordinate and array index (if any)
     ExpressionList MakeCoordinateOperandsForImageAccess(
-        const spvtools::opt::Instruction& image_access);
+        const spvtools::opt::Instruction& image_access, bool& is_signed);
 
     /// Returns the given value as an I32.  If it's already an I32 then this
     /// return the given value.  Otherwise, wrap the value in a TypeConstructor
@@ -923,6 +924,13 @@ class FunctionEmitter {
     /// @returns the value as an I32 value.
     TypedExpression ToI32(TypedExpression value);
 
+    /// Returns the given value as an U32.  If it's already an U32 then this
+    /// return the given value.  Otherwise, wrap the value in a TypeConstructor
+    /// expression.
+    /// @param value the value to pass through or convert
+    /// @returns the value as an U32 value.
+    TypedExpression ToU32(TypedExpression value);
+
     /// Returns the given value as a signed integer type of the same shape
     /// if the value is unsigned scalar or vector, by wrapping the value
     /// with a TypeConstructor expression.  Returns the value itself if the
@@ -930,6 +938,14 @@ class FunctionEmitter {
     /// @param value the value to pass through or convert
     /// @returns the value itself, or converted to signed integral
     TypedExpression ToSignedIfUnsigned(TypedExpression value);
+
+    /// Returns the given value as a unsigned integer type of the same shape
+    /// if the value is signed scalar or vector, by wrapping the value
+    /// with a TypeConstructor expression.  Returns the value itself if the
+    /// value otherwise.
+    /// @param value the value to pass through or convert
+    /// @returns the value itself, or converted to signed integral
+    TypedExpression ToUnsignedIfSigned(TypedExpression value);
 
     /// @param value_id the value identifier to check
     /// @returns true if the given SPIR-V id represents a constant float 0.

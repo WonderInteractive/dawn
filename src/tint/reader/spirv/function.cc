@@ -414,7 +414,7 @@ std::string GetGlslStd450FuncName(uint32_t ext_opcode) {
         case GLSLstd450Asinh:
         case GLSLstd450Acosh:
         case GLSLstd450Atanh:
-
+            break;
         case GLSLstd450MatrixInverse:
 
         case GLSLstd450Modf:
@@ -3351,6 +3351,8 @@ bool FunctionEmitter::EmitStatementsInBasicBlock(const BlockInfo& block_info,
         const auto* def_inst = def_use_mgr_->GetDef(id);
         TINT_ASSERT(Reader, def_inst);
         auto* storage_type = RemapStorageClass(parser_impl_.ConvertType(def_inst->type_id()), id);
+        // Should not be emitting a VariableDeclStatement of type Void
+        if (storage_type->Is<Void>()) continue;
         AddStatement(create<ast::VariableDeclStatement>(
             Source{}, parser_impl_.MakeVar(id, ast::StorageClass::kNone, storage_type, nullptr,
                                            AttributeList{})));
@@ -4206,10 +4208,13 @@ TypedExpression FunctionEmitter::MakeAccessChain(const spvtools::opt::Instructio
         Fail() << "Access chain %" << inst.result_id() << " base pointer is not of pointer type";
         return {};
     }
-    SpvStorageClass storage_class =
-        static_cast<SpvStorageClass>(ptr_type_inst->GetSingleWordInOperand(0));
+    //SpvStorageClass storage_class = SpvStorageClass(SpvStorageClassStorageBuffer);
+    SpvStorageClass storage_class = static_cast<SpvStorageClass>(ptr_type_inst->GetSingleWordInOperand(0));
     uint32_t pointee_type_id = ptr_type_inst->GetSingleWordInOperand(1);
-
+    const auto* ptr_type_inst2 = def_use_mgr_->GetDef(pointee_type_id);
+    ptr_type_inst2;
+    SpvStorageClass storage_class2 = static_cast<SpvStorageClass>(ptr_type_inst2->GetSingleWordInOperand(0));
+    storage_class2;
     // Build up a nested expression for the access chain by walking down the type
     // hierarchy, maintaining |pointee_type_id| as the SPIR-V ID of the type of
     // the object pointed to after processing the previous indices.
@@ -4290,6 +4295,8 @@ TypedExpression FunctionEmitter::MakeAccessChain(const spvtools::opt::Instructio
                                                                   member_access);
                 pointee_type_id = pointee_type_inst->GetSingleWordInOperand(
                     static_cast<uint32_t>(index_const_val));
+                auto* type = parser_impl_.ConvertType(pointee_type_id, PtrAs::Ref);
+                type;
                 break;
             }
             default:
@@ -5000,7 +5007,7 @@ TypedExpression FunctionEmitter::MakeSimpleSelect(const spvtools::opt::Instructi
     // - true_value false_value, and result type to match.
     // - you can't select over pointers or pointer vectors, unless you also have
     //   a VariablePointers* capability, which is not allowed in by WebGPU.
-    auto* op_ty = true_value.type;
+    auto* op_ty = true_value.type->UnwrapRef();
     if (op_ty->Is<Vector>() || op_ty->IsFloatScalar() || op_ty->IsIntegerScalar() ||
         op_ty->Is<Bool>()) {
         ExpressionList params;
@@ -5117,7 +5124,8 @@ bool FunctionEmitter::EmitImageAccess(const spvtools::opt::Instruction& inst) {
     uint32_t arg_index = 1;
 
     // Push the coordinates operands.
-    auto coords = MakeCoordinateOperandsForImageAccess(inst);
+    bool is_signed = false;
+    auto coords = MakeCoordinateOperandsForImageAccess(inst, is_signed);
     if (coords.IsEmpty()) {
         return false;
     }
@@ -5254,10 +5262,15 @@ bool FunctionEmitter::EmitImageAccess(const spvtools::opt::Instruction& inst) {
         } else {
             // Generate the Lod argument.
             TypedExpression lod = MakeOperand(inst, arg_index);
-            // When sampling from a depth texture, the Lod operand must be an I32.
+            // When sampling from a depth texture, the Lod operand must be an I32 or U32.
             if (texture_type->Is<DepthTexture>()) {
                 // Convert it to a signed integer type.
-                lod = ToI32(lod);
+                if (is_signed) {
+                    lod = ToI32(lod);
+                }
+                else {
+                    lod = ToU32(lod);
+                }
             }
             args.Push(lod.expr);
         }
@@ -5304,13 +5317,23 @@ bool FunctionEmitter::EmitImageAccess(const spvtools::opt::Instruction& inst) {
                               << inst.PrettyPrint();
         }
 
-        args.Push(ToSignedIfUnsigned(MakeOperand(inst, arg_index)).expr);
+        if (is_signed) {
+            args.Push(ToSignedIfUnsigned(MakeOperand(inst, arg_index)).expr);
+        }
+        else {
+            args.Push(ToUnsignedIfSigned(MakeOperand(inst, arg_index)).expr);
+        }
         image_operands_mask ^= SpvImageOperandsConstOffsetMask;
         arg_index++;
     }
     if (arg_index < num_args && (image_operands_mask & SpvImageOperandsSampleMask)) {
         // TODO(dneto): only permitted with ImageFetch
-        args.Push(ToI32(MakeOperand(inst, arg_index)).expr);
+        if (is_signed) {
+            args.Push(ToI32(MakeOperand(inst, arg_index)).expr);
+        }
+        else {
+            args.Push(ToU32(MakeOperand(inst, arg_index)).expr);
+        }
         image_operands_mask ^= SpvImageOperandsSampleMask;
         arg_index++;
     }
@@ -5351,11 +5374,15 @@ bool FunctionEmitter::EmitImageAccess(const spvtools::opt::Instruction& inst) {
         // Construct a 4-element vector with the result from the builtin in the
         // first component.
         if (texture_type->IsAnyOf<DepthTexture, DepthMultisampledTexture>()) {
-            if (is_non_dref_sample || (opcode == SpvOpImageFetch)) {
+            if (is_non_dref_sample || (opcode == SpvOpImageFetch) || (opcode == SpvOpImageRead)) {
+                auto value_converted = value;
+                if (result_component_type->Is<I32>() || result_component_type->Is<U32>()) {
+                    value_converted = builder_.Construct(Source{}, result_component_type->Build(builder_), utils::Vector{ value });
+                }
                 value = builder_.Construct(Source{},
                                            result_type->Build(builder_),  // a vec4
                                            utils::Vector{
-                                               value,
+                                               value_converted,
                                                parser_impl_.MakeNullValue(result_component_type),
                                                parser_impl_.MakeNullValue(result_component_type),
                                                parser_impl_.MakeNullValue(result_component_type),
@@ -5408,6 +5435,10 @@ bool FunctionEmitter::EmitImageQuery(const spvtools::opt::Instruction& inst) {
 
     const auto opcode = inst.opcode();
     switch (opcode) {
+        case SpvOpSelect: {
+            auto expr = MakeSimpleSelect(inst);
+            return EmitConstDefOrWriteToHoistedVar(inst, expr);
+        }
         case SpvOpImageQuerySize:
         case SpvOpImageQuerySizeLod: {
             ExpressionList exprs;
@@ -5418,7 +5449,7 @@ bool FunctionEmitter::EmitImageQuery(const spvtools::opt::Instruction& inst) {
                 Source{}, builder_.Symbols().Register("textureDimensions"));
             ExpressionList dims_args{GetImageExpression(inst)};
             if (opcode == SpvOpImageQuerySizeLod) {
-                dims_args.Push(ToI32(MakeOperand(inst, 1)).expr);
+                dims_args.Push(MakeOperand(inst, 1).expr);
             }
             const ast::Expression* dims_call =
                 create<ast::CallExpression>(Source{}, dims_ident, dims_args);
@@ -5580,7 +5611,7 @@ bool FunctionEmitter::EmitAtomicOp(const spvtools::opt::Instruction& inst) {
 }
 
 FunctionEmitter::ExpressionList FunctionEmitter::MakeCoordinateOperandsForImageAccess(
-    const spvtools::opt::Instruction& inst) {
+    const spvtools::opt::Instruction& inst, bool& is_signed) {
     if (!parser_impl_.success()) {
         Fail();
         return {};
@@ -5639,9 +5670,15 @@ FunctionEmitter::ExpressionList FunctionEmitter::MakeCoordinateOperandsForImageA
     auto* component_type = raw_coords.type;
     if (component_type->IsFloatScalar() || component_type->IsIntegerScalar()) {
         num_coords_supplied = 1;
-    } else if (auto* vec_type = As<Vector>(raw_coords.type)) {
+    } else if (auto* vec_type = As<Vector>(raw_coords.type->UnwrapRef())) {
         component_type = vec_type->type;
         num_coords_supplied = vec_type->size;
+    }
+    if (component_type->Is<U32>()) {
+        is_signed = false;
+    }
+    else {
+        is_signed = true;
     }
     if (num_coords_supplied == 0) {
         Fail() << "bad or unsupported coordinate type for image access: " << inst.PrettyPrint();
@@ -5671,9 +5708,9 @@ FunctionEmitter::ExpressionList FunctionEmitter::MakeCoordinateOperandsForImageA
             auto* q =
                 create<ast::MemberAccessorExpression>(Source{}, raw_coords.expr, Swizzle(num_axes));
             auto* proj_div = builder_.Div(swizzle, q);
-            return ToSignedIfUnsigned({swizzle_type, proj_div}).expr;
+            return TypedExpression{swizzle_type, proj_div}.expr;
         } else {
-            return ToSignedIfUnsigned({swizzle_type, swizzle}).expr;
+            return TypedExpression{swizzle_type, swizzle}.expr;
         }
     };
 
@@ -5694,11 +5731,11 @@ FunctionEmitter::ExpressionList FunctionEmitter::MakeCoordinateOperandsForImageA
             array_index = builder_.Call("round", array_index);
         }
         // Convert it to a signed integer type, if needed.
-        result.Push(ToI32({component_type, array_index}).expr);
+        result.Push(TypedExpression{component_type, array_index}.expr);
     } else {
         if (num_coords_supplied == num_coords_required && !is_proj) {
             // Pass the value through, with possible unsigned->signed conversion.
-            result.Push(ToSignedIfUnsigned(raw_coords).expr);
+            result.Push(raw_coords.expr);
         } else {
             // There are more coordinates supplied than needed. So the source type
             // is a vector. Use a vector swizzle to get the first `num_axes`
@@ -5714,7 +5751,7 @@ const ast::Expression* FunctionEmitter::ConvertTexelForStorage(
     TypedExpression texel,
     const Texture* texture_type) {
     auto* storage_texture_type = As<StorageTexture>(texture_type);
-    auto* src_type = texel.type;
+    auto* src_type = texel.type->UnwrapRef();
     if (!storage_texture_type) {
         Fail() << "writing to other than storage texture: " << inst.PrettyPrint();
         return nullptr;
@@ -5738,8 +5775,8 @@ const ast::Expression* FunctionEmitter::ConvertTexelForStorage(
 
     // Component type must match floatness, or integral signedness.
     if ((src_type->IsFloatScalarOrVector() != dest_type->IsFloatVector()) ||
-        (src_type->IsUnsignedIntegerVector() != dest_type->IsUnsignedIntegerVector()) ||
-        (src_type->IsSignedIntegerVector() != dest_type->IsSignedIntegerVector())) {
+        (src_type->IsUnsignedScalarOrVector() != dest_type->IsUnsignedIntegerVector()) ||
+        (src_type->IsSignedScalarOrVector() != dest_type->IsSignedIntegerVector())) {
         Fail() << "invalid texel type for storage texture write: component must be "
                   "float, signed integer, or unsigned integer "
                   "to match the texture channel type: "
@@ -5762,14 +5799,14 @@ const ast::Expression* FunctionEmitter::ConvertTexelForStorage(
 
     if (src_count < dest_count) {
         // Expand the texel to a 4 element vector.
-        auto* component_type = texel.type->IsScalar() ? texel.type : texel.type->As<Vector>()->type;
-        texel.type = ty_.Vector(component_type, dest_count);
+        auto* component_type = src_type->IsScalar() ? src_type : src_type->As<Vector>()->type;
+        src_type = ty_.Vector(component_type, dest_count);
         ExpressionList exprs;
         exprs.Push(texel.expr);
         for (auto i = src_count; i < dest_count; i++) {
             exprs.Push(parser_impl_.MakeNullExpression(component_type).expr);
         }
-        texel.expr = builder_.Construct(Source{}, texel.type->Build(builder_), std::move(exprs));
+        texel.expr = builder_.Construct(Source{}, src_type->Build(builder_), std::move(exprs));
     }
 
     return texel.expr;
@@ -5782,6 +5819,13 @@ TypedExpression FunctionEmitter::ToI32(TypedExpression value) {
     return {ty_.I32(), builder_.Construct(Source{}, builder_.ty.i32(), utils::Vector{value.expr})};
 }
 
+TypedExpression FunctionEmitter::ToU32(TypedExpression value) {
+    if (!value || value.type->Is<U32>()) {
+        return value;
+    }
+    return {ty_.U32(), builder_.Construct(Source{}, builder_.ty.u32(), utils::Vector{value.expr})};
+}
+
 TypedExpression FunctionEmitter::ToSignedIfUnsigned(TypedExpression value) {
     if (!value || !value.type->IsUnsignedScalarOrVector()) {
         return value;
@@ -5791,6 +5835,17 @@ TypedExpression FunctionEmitter::ToSignedIfUnsigned(TypedExpression value) {
         return {new_type, builder_.Construct(new_type->Build(builder_), utils::Vector{value.expr})};
     }
     return ToI32(value);
+}
+
+TypedExpression FunctionEmitter::ToUnsignedIfSigned(TypedExpression value) {
+    if (!value || !value.type->IsSignedScalarOrVector()) {
+        return value;
+    }
+    if (auto* vec_type = value.type->As<Vector>()) {
+        auto* new_type = ty_.Vector(ty_.U32(), vec_type->size);
+        return {new_type, builder_.Construct(new_type->Build(builder_), utils::Vector{value.expr})};
+    }
+    return ToU32(value);
 }
 
 TypedExpression FunctionEmitter::MakeArrayLength(const spvtools::opt::Instruction& inst) {

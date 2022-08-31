@@ -1211,6 +1211,7 @@ const Type* ParserImpl::ConvertType(uint32_t type_id,
                << static_cast<uint32_t>(storage_class);
         return nullptr;
     }
+
     if (ast_storage_class == ast::StorageClass::kUniform &&
         remap_buffer_block_type_.count(pointee_type_id)) {
         ast_storage_class = ast::StorageClass::kStorage;
